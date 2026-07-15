@@ -1,0 +1,40 @@
+name: RDP Access
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  rdp-access:
+    runs-on: windows-latest  # Windows runner kullan
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Enable RDP
+      run: |
+        # RDP'yi aktifleştir
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        # Güvenlik duvarında RDP'ye izin ver
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        # Kullanıcı şifresini ayarla
+        $password = ConvertTo-SecureString "P@ssw0rd123!" -AsPlainText -Force
+        Set-LocalUser -Name "runneradmin" -Password $password
+    
+    - name: Get IP Address
+      id: ip
+      run: |
+        $ip = (Invoke-WebRequest -Uri "https://api.ipify.org").Content
+        echo "ip=$ip" >> $env:GITHUB_OUTPUT
+        echo "RDP Bağlantı Bilgileri:"
+        echo "IP Adresi: $ip"
+        echo "Kullanıcı: runneradmin"
+        echo "Şifre: P@ssw0rd123!"
+        echo "Port: 3389"
+    
+    - name: Keep Running
+      run: |
+        # 2 saat boyunca bağlantıyı canlı tut
+        Start-Sleep -Seconds 7200
